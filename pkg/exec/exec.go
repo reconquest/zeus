@@ -5,23 +5,31 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kovetskiy/lorg"
 	"github.com/reconquest/lexec-go"
 )
 
 var (
-	logger = lorg.NewDiscarder().Tracef
+	logger  *lorg.Log
+	counter int32
 )
 
-func SetLogger(fn func(format string, values ...interface{})) {
-	logger = fn
+func SetLogger(log *lorg.Log) {
+	logger = log
 }
 
 func Exec(command string, args ...string) *Execution {
+	id := atomic.AddInt32(&counter, 1)
+
 	return &Execution{
 		Execution: lexec.NewExec(
-			getLogger(logger),
+			getLogger(
+				logger.NewChildWithPrefix(
+					fmt.Sprintf("<%s#%03d>", command, id),
+				),
+			),
 			exec.Command(command, args...),
 		),
 
@@ -30,7 +38,7 @@ func Exec(command string, args ...string) *Execution {
 	}
 }
 
-func getLogger(fn func(format string, values ...interface{})) lexec.Logger {
+func getLogger(log *lorg.Log) lexec.Logger {
 	formatShellCommand := func(command []string) string {
 		var (
 			reSpecialChars       = regexp.MustCompile("[$`\"!']")
@@ -51,13 +59,15 @@ func getLogger(fn func(format string, values ...interface{})) lexec.Logger {
 
 	return func(command []string, stream lexec.Stream, data []byte) {
 		if stream == lexec.InternalDebug {
-			logger(
-				`<%s> %s (%s) %s`,
-				command[0],
+			log.Tracef(
+				`%s (%s) %s`,
 				"command", formatShellCommand(command), string(data),
 			)
 		} else {
-			logger(`<%s> %s: %s`, command[0], stream, string(data))
+			log.Tracef(
+				`%s: %s`,
+				stream, string(data),
+			)
 		}
 	}
 }

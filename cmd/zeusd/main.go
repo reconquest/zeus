@@ -68,7 +68,7 @@ func main() {
 
 	if opts.FlagVerbose {
 		log.SetLevel(lorg.LevelTrace)
-		exec.SetLogger(log.NewChildWithPrefix("{exec}").Tracef)
+		exec.SetLogger(log.NewChildWithPrefix("{exec}"))
 	}
 
 	config, err := config.LoadConfig(opts.ValueConfig)

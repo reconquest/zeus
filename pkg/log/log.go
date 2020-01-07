@@ -10,7 +10,7 @@ import (
 
 func init() {
 	theme := colorgful.MustApplyDefaultTheme(
-		`${time:2006-01-02 15:04:05.000} ${level:%s:left:true} %s`,
+		`${time:2006-01-02 15:04:05.000} ${level:%s:left:true} ${prefix}%s`,
 		colorgful.Default,
 	)
 
