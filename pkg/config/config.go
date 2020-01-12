@@ -11,10 +11,20 @@ type Config struct {
 	TargetPool    string `toml:"target_pool" default:"zbackup"`
 	TargetDataset string `toml:"target_dataset" default:"$HOSTNAME"`
 
-	Properties struct {
-		Backup         string `toml:"backup" default:"zeus:backup"`
-		BackupInterval string `toml:"backup_interval" default:"zeus:backup-interval"`
-	} `toml:"properties"`
+	SnapshotPrefix string `toml:"snapshot_prefix" default:"'zeus:'" required:"true"`
+
+	HoldTag string `toml:"hold_tag" default:"zeus"`
+
+	Defaults struct {
+		Housekeeping struct {
+			Policy string `toml:"policy" default:"by-count"`
+
+			ByCount struct {
+				KeepOnTarget int `toml:"keep_on_target" default:"10"`
+				KeepOnSource int `toml:"keep_on_source" default:"1"`
+			} `toml:"by_count"`
+		} `toml:"housekeeping"`
+	} `toml:"defaults"`
 }
 
 func LoadConfig(path string) (*Config, error) {

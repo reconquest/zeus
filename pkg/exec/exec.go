@@ -27,7 +27,7 @@ func Exec(command string, args ...string) *Execution {
 		Execution: lexec.NewExec(
 			getLogger(
 				logger.NewChildWithPrefix(
-					fmt.Sprintf("<%s#%03d>", command, id),
+					fmt.Sprintf("<exec> %s#%03d:", command, id),
 				),
 			),
 			exec.Command(command, args...),

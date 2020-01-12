@@ -5,6 +5,8 @@ import (
 	"io"
 )
 
+// XXX: dead code, not used after refactoring
+
 var (
 	cache = map[string]*ExecutionCached{}
 )

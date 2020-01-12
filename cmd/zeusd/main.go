@@ -25,13 +25,15 @@ Options:
   -h --help           Show this help.
   -c --config=<file>  Specify config file.
                        [default: $HOME/.config/zeus/config.toml]
-  -v --verbose        Run program with increased verbosity.
+  --debug             Output debug messages in logs.
+  --trace             Output trace messages in logs.
 `
 
 type Opts struct {
-	FlagVerbose bool   `docopt:"--verbose"`
 	ValueConfig string `docopt:"--config"`
 	ModeBackup  bool   `docopt:"backup"`
+	FlagDebug   bool   `docopt:"--debug"`
+	FlagTrace   bool   `docopt:"--trace"`
 }
 
 func init() {
@@ -66,10 +68,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if opts.FlagVerbose {
+	switch {
+	case opts.FlagDebug:
+		log.SetLevel(lorg.LevelDebug)
+	case opts.FlagTrace:
 		log.SetLevel(lorg.LevelTrace)
-		exec.SetLogger(log.NewChildWithPrefix("{exec}"))
 	}
+
+	exec.SetLogger(log.NewChildWithPrefix("{exec}"))
 
 	config, err := config.LoadConfig(opts.ValueConfig)
 	if err != nil {
