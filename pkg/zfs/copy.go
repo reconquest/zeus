@@ -24,6 +24,8 @@ type CopyProgress struct {
 	Updated  time.Time
 	SentSize uint64
 
+	Sent bool
+
 	Error error
 }
 
@@ -77,34 +79,44 @@ func CopyDataset(
 	send.SetStderr(logger)
 	recv.SetStdin(stdout)
 
-	err = recv.Start()
+	var wg sync.WaitGroup
+	var errs struct {
+		sync.Mutex
+		reasons []karma.Reason
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err = send.Run()
+		if err != nil {
+			errs.Lock()
+			errs.reasons = append(errs.reasons, karma.Format(
+				err,
+				"zfs send failed",
+			))
+			errs.Unlock()
+		}
+
+		progress.Sent = true
+		progressFunc(progress)
+	}()
+
+	err = recv.Run()
 	if err != nil {
-		return karma.Format(
+		errs.Lock()
+		errs.reasons = append(errs.reasons, karma.Format(
 			err,
 			"zfs receive failed (start)",
-		)
+		))
+		errs.Unlock()
+
+		send.Process().Kill()
 	}
 
-	err = send.Run()
-	if err != nil {
-		return karma.Format(
-			err,
-			"zfs send failed",
-		)
-	}
+	wg.Wait()
 
-	progress.EstimatedSize = progress.SentSize
-	go progressFunc(progress)
-
-	err = recv.Wait()
-	if err != nil {
-		return karma.Format(
-			err,
-			"zfs receive failed",
-		)
-	}
-
-	return nil
+	return karma.Push(err, errs.reasons...)
 }
 
 func (progress *CopyProgress) apply(line string) CopyProgress {

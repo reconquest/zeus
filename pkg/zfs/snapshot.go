@@ -34,9 +34,14 @@ func ListSnapshots(dataset string) ([]string, error) {
 			)
 	}
 
-	snapshots := strings.Split(strings.TrimSpace(stdout), "\n")
+	{
+		stdout := strings.TrimSpace(stdout)
+		if stdout == "" {
+			return nil, nil
+		}
 
-	return snapshots, nil
+		return strings.Split(stdout, "\n"), nil
+	}
 }
 
 func SplitSnapshotName(name string) (string, string, error) {

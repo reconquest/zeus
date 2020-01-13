@@ -72,7 +72,7 @@ func (operation Backup) Run() error {
 	} else {
 		log.Infof(
 			"starting full send: %q -> %q",
-			fmt.Sprintf("%s@%s", operation.Source, operation.Snapshot.Base),
+			fmt.Sprintf("%s@%s", operation.Source, operation.Snapshot.Current),
 			operation.Target,
 		)
 	}
@@ -83,7 +83,7 @@ func (operation Backup) Run() error {
 		operation.Snapshot.Base,
 		createCopyProgressLogger(
 			log.NewChildWithPrefix(
-				fmt.Sprintf("sending %s:", sourceSnapshot),
+				fmt.Sprintf("{zfs send} sending %s:", sourceSnapshot),
 			),
 		),
 	)
@@ -105,7 +105,7 @@ func createCopyProgressLogger(log *lorg.Log) func(progress zfs.CopyProgress) {
 		running := progress.Updated.Sub(progress.Started)
 
 		if progress.SentSize > 0 && running.Seconds() > 0 {
-			if progress.SentSize == progress.EstimatedSize {
+			if progress.Sent {
 				log.Infof(
 					"complete in %s | %s %s",
 					running.Round(time.Millisecond),
