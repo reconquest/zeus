@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reconquest/zeus/pkg/backup/errs"
 	"github.com/reconquest/zeus/pkg/backup/housekeeping"
 	"github.com/reconquest/zeus/pkg/backup/operation"
 	"github.com/reconquest/zeus/pkg/config"
@@ -206,72 +207,25 @@ func isPoolInImportedList(name string) (bool, error) {
 	return false, nil
 }
 
-func errUnsupportedPropertyValue(
-	givenValue string,
-	supportedValues []string,
-) error {
-	return karma.
-		Describe("value", givenValue).
-		Reason(
-			fmt.Errorf(
-				strings.Join(
-					[]string{
-						"unsuported value given for property",
-						"supported values are: %q",
-					},
-					"\n",
-				),
-				supportedValues,
-			),
-		)
-}
-
-func parseBackupProperty(value string) (bool, error) {
-	switch value {
-	case "on":
-		return true, nil
-
-	case "off":
-		return false, nil
-
-	default:
-		return false, errUnsupportedPropertyValue(
-			value,
-			[]string{"on", "off"},
-		)
-	}
-}
-
-func parseHousekeepingProperty(value string) (string, error) {
-	switch value {
-	case "none", "by-count":
-		return value, nil
-
-	default:
-		return "", errUnsupportedPropertyValue(
-			value,
-			[]string{"none", "by-count"},
-		)
-	}
-}
-
 func applyProperty(
 	config *config.Config,
 	operation BackupOperationWithHousekeeping,
 	property zfs.Property,
 ) (BackupOperationWithHousekeeping, error) {
-	facts := karma.
-		Describe("property", property.Name).
-		Describe("dataset", property.Source)
-
 	switch property.Name {
 	case constants.Backup:
-		enabled, err := parseBackupProperty(property.Value)
-		if err != nil {
-			return operation, facts.Reason(err)
-		}
+		switch property.Value {
+		case "on":
+			operation.Enabled = true
+		case "off":
+			operation.Enabled = false
 
-		operation.Enabled = enabled
+		default:
+			return operation, errs.UnsupportedPropertyValue(
+				property,
+				[]string{"on", "off"},
+			)
+		}
 	}
 
 	return operation, nil
