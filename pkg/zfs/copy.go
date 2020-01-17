@@ -2,41 +2,33 @@ package zfs
 
 import (
 	"fmt"
+	"io"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/reconquest/callbackwriter-go"
 	"github.com/reconquest/karma-go"
-	"github.com/reconquest/lineflushwriter-go"
-	"github.com/reconquest/nopio-go"
+	"github.com/reconquest/zeus/pkg/constants"
 	"github.com/reconquest/zeus/pkg/exec"
+	"github.com/reconquest/zeus/pkg/log"
 )
 
 type CopyProgress struct {
-	SendType string
+	StartedAt time.Time
 
-	OriginalSize  uint64
-	EstimatedSize uint64
-
-	Started  time.Time
-	Updated  time.Time
-	SentSize uint64
-
-	Sent bool
-
-	Error error
+	TotalSize uint64
+	SentSize  uint64
+	Sent      bool
 }
 
 func CopyDataset(
 	sourceSnapshot string,
 	targetDataset string,
 	baseSnapshot string,
-	progressFunc func(line CopyProgress),
+	progressFunc func(CopyProgress),
 ) error {
 	sendArgs := []string{
-		`send`, `-Pvc`, sourceSnapshot,
+		`send`, `-P`, `-c`, sourceSnapshot,
 	}
 
 	if baseSnapshot != "" {
@@ -45,7 +37,8 @@ func CopyDataset(
 
 	var (
 		recv = exec.Exec(
-			`zfs`, `recv`, `-F`, fmt.Sprintf(
+			`zfs`, `recv`, `-u`,
+			fmt.Sprintf(
 				"%s/%s",
 				targetDataset,
 				sourceSnapshot,
@@ -55,29 +48,50 @@ func CopyDataset(
 		send = exec.Exec(`zfs`, sendArgs...).NoStdLog()
 	)
 
-	progress := CopyProgress{
-		Started: time.Now(),
-	}
-
-	logger := lineflushwriter.New(
-		callbackwriter.New(
-			nopio.NopWriteCloser{},
-			func(line []byte) {
-				progressFunc(progress.apply(string(line)))
-			},
-			nil,
-		),
-		&sync.Mutex{},
-		true,
-	)
-
 	stdout, err := send.StdoutPipe()
 	if err != nil {
 		return err
 	}
 
-	send.SetStderr(logger)
-	recv.SetStdin(stdout)
+	progress := CopyProgress{
+		StartedAt: time.Now(),
+	}
+
+	sizeUsed, sizeReferenced, err := getSize(sourceSnapshot)
+	if err != nil {
+		return err
+	}
+
+	if baseSnapshot == "" {
+		progress.TotalSize = sizeReferenced
+	} else {
+		progress.TotalSize = sizeUsed
+	}
+
+	var (
+		progressWriter = ProgressWriter{}
+		progressDone   = make(chan struct{}, 1)
+	)
+
+	go func() {
+		for {
+			progress.SentSize = progressWriter.Total
+			progressFunc(progress)
+
+			select {
+			case <-progressDone:
+				return
+			default:
+				time.Sleep(time.Second)
+			}
+		}
+	}()
+
+	defer func() {
+		progressDone <- struct{}{}
+	}()
+
+	recv.SetStdin(io.TeeReader(stdout, &progressWriter))
 
 	var wg sync.WaitGroup
 	var errs struct {
@@ -99,7 +113,10 @@ func CopyDataset(
 		}
 
 		progress.Sent = true
+
 		progressFunc(progress)
+
+		log.Info("{copy} send thread finished, now waiting for receive")
 	}()
 
 	err = recv.Run()
@@ -107,7 +124,7 @@ func CopyDataset(
 		errs.Lock()
 		errs.reasons = append(errs.reasons, karma.Format(
 			err,
-			"zfs receive failed (start)",
+			"zfs receive failed",
 		))
 		errs.Unlock()
 
@@ -116,80 +133,74 @@ func CopyDataset(
 
 	wg.Wait()
 
-	return karma.Push(err, errs.reasons...)
-}
-
-func (progress *CopyProgress) apply(line string) CopyProgress {
-	progress.Error = progress.try(line)
-
-	return *progress
-}
-
-func (progress *CopyProgress) try(line string) error {
-	fields := strings.Split(strings.Trim(line, "\n"), "\t")
-
-	switch fields[0] {
-	case "incremental":
-		fallthrough
-	case "full":
-		progress.SendType = fields[0]
-
-		if len(fields) != 3 {
-			return karma.
-				Describe("line", line).
-				Reason(
-					"unexpected number of fields in first line of `zfs send` output",
-				)
-		}
-
-		size, err := strconv.ParseUint(fields[2], 10, 64)
-		if err != nil {
-			return karma.
-				Describe("line", line).
-				Format(
-					err,
-					"unable to parse size value from first line of `zfs send` output",
-				)
-		}
-
-		progress.OriginalSize = size
-
-	case "size":
-		if len(fields) != 2 {
-			return karma.
-				Describe("line", line).
-				Reason(
-					"unexpected number of fields in second line of `zfs send` output",
-				)
-		}
-
-		size, err := strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
-			return karma.
-				Describe("line", line).
-				Format(
-					err,
-					"unable to parse size value from second line of `zfs send` output",
-				)
-		}
-
-		progress.EstimatedSize = size
-
-	default:
-		size, err := strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
-			return karma.
-				Describe("line", line).
-				Format(
-					err,
-					"unable to parse size value from second line of `zfs send` output",
-				)
-		}
-
-		progress.SentSize = size
+	if len(errs.reasons) > 0 {
+		return karma.Push(err, errs.reasons...)
 	}
 
-	progress.Updated = time.Now()
-
 	return nil
+}
+
+func getSize(snapshot string) (uint64, uint64, error) {
+	mappings, err := GetDatasetProperties([]PropertyRequest{
+		{Name: constants.Used, System: true, Snapshot: true},
+		{Name: constants.Referenced, System: true, Snapshot: true},
+	}, snapshot)
+	if err != nil {
+		return 0, 0, karma.Format(
+			err,
+			"unable to get used & referenced sizes for %q",
+			snapshot,
+		)
+	}
+
+	var (
+		sizeUsed       uint64
+		sizeReferenced uint64
+	)
+
+	if len(mappings) == 0 {
+		return 0, 0, karma.
+			Describe("snapshot", snapshot).
+			Reason(
+				"given dataset %q is not found",
+			)
+	}
+
+	for _, mapping := range mappings {
+		if mapping.Source != snapshot {
+			continue
+		}
+
+		for _, property := range mapping.Properties {
+			switch property.Name {
+			case constants.Used:
+				size, err := strconv.ParseUint(property.Value, 10, 64)
+				if err != nil {
+					return 0, 0, karma.
+						Describe("size", property.Value).
+						Format(
+							err,
+							"unable to parse used size",
+						)
+				}
+
+				sizeUsed = size
+
+			case constants.Referenced:
+				size, err := strconv.ParseUint(property.Value, 10, 64)
+				if err != nil {
+					return 0, 0, karma.
+						Describe("size", property.Value).
+						Format(
+							err,
+							"unable to parse referenced size",
+						)
+				}
+
+				sizeReferenced = size
+			}
+		}
+	}
+
+	return sizeUsed, sizeReferenced, nil
 }

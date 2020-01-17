@@ -2,10 +2,12 @@ package operation
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/kovetskiy/lorg"
 	"github.com/reconquest/karma-go"
+	"github.com/reconquest/zeus/pkg/constants"
 	"github.com/reconquest/zeus/pkg/formatting"
 	pkg_log "github.com/reconquest/zeus/pkg/log"
 	"github.com/reconquest/zeus/pkg/zfs"
@@ -14,6 +16,7 @@ import (
 type (
 	Backup struct {
 		Enabled bool
+		GUID    string
 		Source  string
 		Target  string
 
@@ -29,14 +32,9 @@ var (
 )
 
 func (operation Backup) Run() error {
-	err := zfs.EnsureDatasetExists(
-		fmt.Sprintf("%s/%s", operation.Target, operation.Source),
-	)
+	err := operation.ensureTargetDataset()
 	if err != nil {
-		return karma.Format(
-			err,
-			"unable to create source dataset hierarchy on target",
-		)
+		return err
 	}
 
 	log.Debugf(
@@ -54,6 +52,14 @@ func (operation Backup) Run() error {
 	err = zfs.CreateSnapshot(sourceSnapshot)
 	if err != nil {
 		return err
+	}
+
+	err = zfs.SetDatasetProperty(sourceSnapshot, constants.Managed, `yes`)
+	if err != nil {
+		return karma.Format(
+			err,
+			"unable to set managed mark on source snapshot",
+		)
 	}
 
 	if operation.Snapshot.Base != "" {
@@ -97,44 +103,59 @@ func (operation Backup) Run() error {
 			)
 	}
 
+	err = zfs.SetDatasetProperty(
+		fmt.Sprintf("%s/%s", operation.Target, sourceSnapshot),
+		constants.Managed,
+		`yes`,
+	)
+	if err != nil {
+		return karma.Format(
+			err,
+			"unabled to set managed mark on target snapshot",
+		)
+	}
+
+	return nil
+}
+
+func (operation *Backup) ensureTargetDataset() error {
+	parent := filepath.Dir(
+		fmt.Sprintf("%s/%s", operation.Target, operation.Source),
+	)
+
+	log.Debugf("ensuring required parent dataset %q", parent)
+
+	err := zfs.EnsureDatasetExists(parent)
+	if err != nil {
+		return karma.Format(
+			err,
+			"unable to create source dataset hierarchy on target",
+		)
+	}
+
 	return nil
 }
 
 func createCopyProgressLogger(log *lorg.Log) func(progress zfs.CopyProgress) {
 	return func(progress zfs.CopyProgress) {
-		running := progress.Updated.Sub(progress.Started)
-
-		if progress.SentSize > 0 && running.Seconds() > 0 {
-			if progress.Sent {
-				log.Infof(
-					"complete in %s | %s %s",
-					running.Round(time.Millisecond),
-					progress.SendType,
-					formatting.Size(progress.SentSize),
-				)
-
-				log.Infof("now waiting receive to finish")
-
-				return
-			}
+		if !progress.Sent {
+			running := time.Now().Sub(progress.StartedAt)
 
 			rate := float64(progress.SentSize) / running.Seconds()
 			var left float64
 
-			if progress.EstimatedSize >= progress.SentSize {
-				left = float64(progress.EstimatedSize-progress.SentSize) / rate
+			if progress.SentSize <= progress.TotalSize {
+				left = float64(progress.TotalSize-progress.SentSize) / rate
 			} else {
 				left = 0
 			}
 
 			log.Debugf(
-				"%-8s | %s %s | eta %s",
+				"%-8s / %-8s | eta %s",
 				formatting.Size(progress.SentSize),
-				progress.SendType,
-				formatting.Size(progress.EstimatedSize),
+				formatting.Size(progress.TotalSize),
 				time.Duration(time.Duration(left)*time.Second),
 			)
 		}
-
 	}
 }

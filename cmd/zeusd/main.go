@@ -19,21 +19,24 @@ var usage = `zeus - zfs backup tool.
 
 Usage:
   zeus -h | --help
-  zeus [options] backup
+  zeus [options] backup [--no-export]
 
 Options:
   -h --help           Show this help.
   -c --config=<file>  Specify config file.
                        [default: $HOME/.config/zeus/config.toml]
+  --no-export         Will not export target pool at the end of backup
+                       operation.
   --debug             Output debug messages in logs.
   --trace             Output trace messages in logs.
 `
 
 type Opts struct {
-	ValueConfig string `docopt:"--config"`
-	ModeBackup  bool   `docopt:"backup"`
-	FlagDebug   bool   `docopt:"--debug"`
-	FlagTrace   bool   `docopt:"--trace"`
+	ValueConfig  string `docopt:"--config"`
+	ModeBackup   bool   `docopt:"backup"`
+	FlagNoExport bool   `docopt:"--no-export"`
+	FlagDebug    bool   `docopt:"--debug"`
+	FlagTrace    bool   `docopt:"--trace"`
 }
 
 func init() {
@@ -84,7 +87,10 @@ func main() {
 
 	switch {
 	case opts.ModeBackup:
-		err = backup.Backup(config)
+		err = backup.Backup(
+			config,
+			backup.OptNoExport(opts.FlagNoExport),
+		)
 	}
 
 	if err != nil {

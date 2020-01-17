@@ -11,9 +11,15 @@ type Config struct {
 	TargetPool    string `toml:"target_pool" default:"zbackup"`
 	TargetDataset string `toml:"target_dataset" default:"$HOSTNAME"`
 
-	SnapshotPrefix string `toml:"snapshot_prefix" default:"'zeus:'" required:"true"`
+	SnapshotPrefix string `toml:"snapshot_prefix" default:"'zeus:'"`
 
-	HoldTag string `toml:"hold_tag" default:"zeus"`
+	HoldTag string `toml:"hold_tag" default:"zeus" required:"true"`
+
+	EncryptionKey struct {
+		Provider string `toml:"provider" default:"command"`
+
+		Command EncryptionKeyCommand `toml:"command"`
+	} `toml:"encryption_key"`
 
 	Defaults struct {
 		Housekeeping struct {
@@ -25,6 +31,11 @@ type Config struct {
 			} `toml:"by_count"`
 		} `toml:"housekeeping"`
 	} `toml:"defaults"`
+}
+
+type EncryptionKeyCommand struct {
+	Executable string   `toml:"executable" default:"zfs-encryption-key"`
+	Args       []string `toml:"args" default:"['$DATASET']"`
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -5,12 +5,12 @@ import (
 	"github.com/reconquest/zeus/pkg/exec"
 )
 
-func DestroyDataset(name string) error {
-	err := exec.Exec(`zfs`, `destroy`, name).Run()
+func ExportPool(name string) error {
+	err := exec.Exec(`zpool`, `export`, name).Run()
 	if err != nil {
 		return karma.Format(
 			err,
-			"unable to run zfs destroy",
+			"unable to run zpool export",
 		)
 	}
 

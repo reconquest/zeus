@@ -3,7 +3,6 @@ package housekeeping
 import (
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/reconquest/karma-go"
 	"github.com/reconquest/zeus/pkg/backup/operation"
@@ -14,9 +13,9 @@ import (
 )
 
 type PolicyByCount struct {
-	SnapshotPrefix string
-	KeepOnSource   int
-	KeepOnTarget   int
+	KeepOnSource int
+	KeepOnTarget int
+	HoldTag      string
 }
 
 func init() {
@@ -32,7 +31,7 @@ func NewPolicyByCount(
 ) (Policy, error) {
 	var policy PolicyByCount
 
-	policy.SnapshotPrefix = config.SnapshotPrefix
+	policy.HoldTag = config.HoldTag
 
 	for _, property := range properties {
 		switch property.Name {
@@ -74,6 +73,14 @@ func (PolicyByCount) GetName() string {
 func (policy PolicyByCount) Cleanup(operation operation.Backup) error {
 	log := log.NewChildWithPrefix("{houseskeeping} <by-count>")
 
+	log.Infof(
+		"configuration: will keep %d source %s, %d target %s",
+		policy.KeepOnSource,
+		text.Pluralize("snapshot", policy.KeepOnSource),
+		policy.KeepOnTarget,
+		text.Pluralize("snapshot", policy.KeepOnTarget),
+	)
+
 	cleanup := func(dataset string, keep int) (int, error) {
 		log.Infof(
 			"running snapshots cleanup for dataset %q (will keep %d %s)",
@@ -82,20 +89,12 @@ func (policy PolicyByCount) Cleanup(operation operation.Backup) error {
 			text.Pluralize("snapshot", keep),
 		)
 
-		snapshots, err := zfs.ListSnapshots(dataset)
+		snapshots, err := listManagedSnapshots(dataset)
 		if err != nil {
 			return 0, err
 		}
 
 		var destroyed int
-
-		// TODO filter snapshots
-
-		for i, candidate := range snapshots {
-			if strings.HasPrefix(candidate, policy.SnapshotPrefix) {
-				snapshots = snapshots[:i+copy(snapshots[i:], snapshots[i+1:])]
-			}
-		}
 
 		for i, _ := range snapshots {
 			_, candidate, err := zfs.SplitSnapshotName(snapshots[i])
@@ -127,6 +126,34 @@ func (policy PolicyByCount) Cleanup(operation operation.Backup) error {
 
 			log.Infof("destroying old snapshot %q", snapshots[i])
 
+			held, err := zfs.HasHold(policy.HoldTag, snapshots[i])
+			if err != nil {
+				return 0, karma.Format(
+					err,
+					"unable to check that snapshot %q is held by %q tag",
+					snapshots[i],
+					policy.HoldTag,
+				)
+			}
+
+			if held {
+				log.Warningf(
+					"snapshot %q is still held by %q tag, releasing it",
+					snapshots[i],
+					policy.HoldTag,
+				)
+
+				err := zfs.Release(policy.HoldTag, snapshots[i])
+				if err != nil {
+					return 0, karma.Format(
+						err,
+						"unable to release hold tag %q on %q",
+						policy.HoldTag,
+						snapshots[i],
+					)
+				}
+			}
+
 			err = zfs.DestroyDataset(snapshots[i])
 			if err != nil {
 				return 0, karma.Format(
@@ -150,7 +177,10 @@ func (policy PolicyByCount) Cleanup(operation operation.Backup) error {
 		)
 	}
 
-	targetDestroyed, err := cleanup(operation.Target, policy.KeepOnTarget)
+	targetDestroyed, err := cleanup(
+		fmt.Sprintf("%s/%s", operation.Target, operation.Source),
+		policy.KeepOnTarget,
+	)
 	if err != nil {
 		return karma.Format(
 			err,
@@ -165,6 +195,23 @@ func (policy PolicyByCount) Cleanup(operation operation.Backup) error {
 	)
 
 	return nil
+}
+
+func listManagedSnapshots(dataset string) ([]string, error) {
+	properties, err := zfs.GetDatasetProperties([]zfs.PropertyRequest{
+		{Name: constants.Managed, Snapshot: true, Local: true},
+	}, dataset)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshots := []string{}
+
+	for _, property := range properties {
+		snapshots = append(snapshots, property.Source)
+	}
+
+	return snapshots, nil
 }
 
 func parsePolicyByCountKeepProperty(value string) (int, error) {

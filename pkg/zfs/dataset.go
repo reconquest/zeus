@@ -6,7 +6,10 @@ import (
 )
 
 func EnsureDatasetExists(dataset string) error {
-	err := exec.Exec(`zfs`, `create`, `-p`, dataset).Run()
+	err := exec.Exec(
+		`zfs`, `create`,
+		`-p`, dataset, // `-o`, `encryption=on`
+	).Run()
 	if err != nil {
 		return karma.
 			Describe("dataset", dataset).

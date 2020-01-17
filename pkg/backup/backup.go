@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +11,9 @@ import (
 	"github.com/reconquest/zeus/pkg/backup/operation"
 	"github.com/reconquest/zeus/pkg/config"
 	"github.com/reconquest/zeus/pkg/constants"
+	"github.com/reconquest/zeus/pkg/exec"
 	pkg_log "github.com/reconquest/zeus/pkg/log"
+	"github.com/reconquest/zeus/pkg/text"
 	"github.com/reconquest/zeus/pkg/zfs"
 
 	"github.com/reconquest/karma-go"
@@ -27,7 +30,22 @@ type (
 	}
 )
 
-func Backup(config *config.Config) error {
+type (
+	Opts interface{}
+
+	OptNoExport bool
+)
+
+func Backup(config *config.Config, opts ...Opts) error {
+	var noExport bool
+
+	for _, opt := range opts {
+		switch opt := opt.(type) {
+		case OptNoExport:
+			noExport = bool(opt)
+		}
+	}
+
 	targetDatasetName := fmt.Sprintf(
 		"%s/%s",
 		config.TargetPool,
@@ -37,14 +55,17 @@ func Backup(config *config.Config) error {
 	log.Infof("target backup pool: %q", config.TargetPool)
 	log.Infof("target backup dataset: %q", targetDatasetName)
 
-	log.Debugf("checking that backup pool is imported")
+	log.Debugf("checking that target backup pool is imported")
 
 	if ok, err := isPoolImported(config.TargetPool); !ok {
 		if err != nil {
 			return err
 		}
 
-		log.Debugf("backup pool is not imported, importing pool")
+		log.Infof(
+			"target backup pool %q is not imported, importing pool",
+			config.TargetPool,
+		)
 
 		err := zfs.ImportPool(config.TargetPool)
 		if err != nil {
@@ -54,7 +75,23 @@ func Backup(config *config.Config) error {
 			)
 		}
 	} else {
-		log.Debugf("backup pool is already imported")
+		log.Infof(
+			"target backup %q pool is already imported",
+			config.TargetPool,
+		)
+	}
+
+	if !noExport {
+		defer func() {
+			log.Infof("exporting target backup pool %q", config.TargetPool)
+			err := zfs.ExportPool(config.TargetPool)
+			if err != nil {
+				log.Errorf(karma.Format(
+					err,
+					"unable to export pool",
+				).String())
+			}
+		}()
 	}
 
 	// TODO(seletskiy): check S.M.A.R.T. before attempting backup
@@ -85,12 +122,39 @@ func Backup(config *config.Config) error {
 		return nil
 	}
 
+	log.Debugf("checking dataset %q encryption status", targetDatasetName)
+
+	encrypted, encryptionRoot, err := loadEncryptionKey(
+		config,
+		config.TargetPool,
+	)
+	if err != nil {
+		return karma.Format(
+			err,
+			"unable to load encryption key",
+		)
+	}
+
 	err = zfs.EnsureDatasetExists(targetDatasetName)
 	if err != nil {
 		return karma.Format(
 			err,
-			"unable to create source dataset hierarchy on target",
+			"unable to create initial target dataset hierarchy",
 		)
+	}
+
+	if encrypted {
+		defer func() {
+			log.Infof("unloading encryption key from %q", encryptionRoot)
+			err := zfs.UnloadKey(encryptionRoot)
+			if err != nil {
+				log.Error(karma.Format(
+					err,
+					"unable to unload encryption key for %q",
+					encryptionRoot,
+				).String())
+			}
+		}()
 	}
 
 	log.Debugf("listing snapshots on the backup dataset %q", targetDatasetName)
@@ -105,13 +169,21 @@ func Backup(config *config.Config) error {
 		)
 	}
 
+	var backuped int
+
 	currentSnapshot := config.SnapshotPrefix +
 		time.Now().UTC().Format(time.RFC3339)
 
 	for _, operation := range operations {
-		operation.Target = targetDatasetName
+		var (
+			namespace = "guid:" + operation.GUID[len(operation.GUID)-7:]
+			source    = fmt.Sprintf("%s/%s", namespace, operation.Source)
+		)
+
+		operation.Target = fmt.Sprintf("%s/%s", targetDatasetName, namespace)
+
 		operation.Snapshot.Current = currentSnapshot
-		operation.Snapshot.Base = targetSnapshotsBySource[operation.Source]
+		operation.Snapshot.Base = targetSnapshotsBySource[source]
 
 		err := operation.Run()
 		if err != nil {
@@ -146,7 +218,15 @@ func Backup(config *config.Config) error {
 				"unable to run housekeeping",
 			)
 		}
+
+		backuped++
 	}
+
+	log.Infof(
+		"backup successfully completed for %d %s",
+		backuped,
+		text.Pluralize("dataset", backuped),
+	)
 
 	return nil
 }
@@ -217,8 +297,18 @@ func applyProperty(
 		switch property.Value {
 		case "on":
 			operation.Enabled = true
+			log.Infof(
+				"will backup dataset %q",
+				property.Source,
+			)
+
 		case "off":
 			operation.Enabled = false
+
+			log.Infof(
+				"skipping dataset %q because property %q set to 'off'",
+				property.Source, constants.Backup,
+			)
 
 		default:
 			return operation, errs.UnsupportedPropertyValue(
@@ -226,6 +316,9 @@ func applyProperty(
 				[]string{"on", "off"},
 			)
 		}
+
+	case constants.GUID:
+		operation.GUID = property.Value
 	}
 
 	return operation, nil
@@ -236,7 +329,10 @@ func getBackupOperations(
 ) ([]BackupOperationWithHousekeeping, error) {
 	mappings, err := zfs.GetDatasetProperties(
 		append(
-			[]zfs.PropertyRequest{{Name: constants.Backup}},
+			[]zfs.PropertyRequest{
+				{Name: constants.GUID, System: true, Filesystem: true},
+				{Name: constants.Backup, Local: true, Filesystem: true},
+			},
 			housekeeping.Properties...,
 		),
 	)
@@ -264,15 +360,10 @@ mappingsLoop:
 
 				continue mappingsLoop
 			}
+		}
 
-			if !operation.Enabled {
-				log.Infof(
-					"skipping operation %q because property %q set to 'off'",
-					property.Source, constants.Backup,
-				)
-
-				continue mappingsLoop
-			}
+		if !operation.Enabled {
+			continue
 		}
 
 		policy, err := housekeeping.Configure(config, mapping.Properties)
@@ -320,4 +411,119 @@ func getLatestTargetSnapshotsBySource(
 	}
 
 	return mapping, nil
+}
+
+func loadEncryptionKey(
+	config *config.Config,
+	dataset string,
+) (bool, string, error) {
+	mappings, err := zfs.GetDatasetProperties([]zfs.PropertyRequest{
+		{Name: constants.Keystatus, System: true, Filesystem: true},
+		{Name: constants.EncryptionRoot, System: true, Filesystem: true},
+	}, dataset)
+	if err != nil {
+		return false, "", err
+	}
+
+	if len(mappings) == 0 {
+		return false, "", nil
+	}
+
+	var encryptionRoot string
+	var keyAlreadyLoaded bool
+
+	for _, mapping := range mappings {
+		if mapping.Source == dataset {
+			for _, property := range mapping.Properties {
+				switch property.Name {
+				case constants.Keystatus:
+					keyAlreadyLoaded =
+						property.Value == constants.KeystatusAvailable
+				case constants.EncryptionRoot:
+					encryptionRoot = property.Value
+				}
+			}
+		}
+	}
+
+	log.Infof("encryption detected on dataset %q", encryptionRoot)
+
+	if keyAlreadyLoaded {
+		return true, encryptionRoot, nil
+	}
+
+	log.Infof("loading encryption key for %q", encryptionRoot)
+
+	var key string
+
+	switch config.EncryptionKey.Provider {
+	case "command":
+		key, err = runEncryptionKeyProviderCommand(
+			config.EncryptionKey.Command,
+			encryptionRoot,
+		)
+		if err != nil {
+			return false, "", err
+		}
+	default:
+		return false, "", karma.
+			Describe("provider", config.EncryptionKey.Provider).
+			Format(
+				err,
+				"unsupported encryption key provider",
+			)
+	}
+
+	err = zfs.LoadKey(encryptionRoot, key)
+	if err != nil {
+		return false, "", karma.Format(
+			err,
+			"unable to load encryption key to zfs",
+		)
+	}
+
+	return true, encryptionRoot, nil
+}
+
+func runEncryptionKeyProviderCommand(
+	config config.EncryptionKeyCommand,
+	dataset string,
+) (string, error) {
+	facts := karma.
+		Describe("executable", config.Executable).
+		Describe("args", config.Args)
+
+	args := make([]string, len(config.Args))
+
+	copy(args, config.Args)
+
+	for i, arg := range args {
+		args[i] = strings.ReplaceAll(arg, "$DATASET", dataset)
+	}
+
+	execution := exec.Exec(config.Executable, args...)
+
+	var stdout bytes.Buffer
+
+	execution.SetStdout(&stdout)
+
+	err := execution.Run()
+	if err != nil {
+		return "", facts.
+			Format(
+				err,
+				"unable to run encryption key provider",
+			)
+	}
+
+	key := stdout.String()
+
+	if key == "" {
+		return "", facts.Format(
+			err,
+			"provided encryption key is empty",
+		)
+	}
+
+	return key, nil
 }
