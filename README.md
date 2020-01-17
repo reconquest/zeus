@@ -7,6 +7,12 @@
 **zeus** is a tool for performing backups onto another zfs pool which is
 physically connected to the machine.
 
+# Quick Start
+
+0. Get `zeus`: `go get github.com/reconquest/zeus/cmd/...`
+1. Create pool named `zbackup`
+2. Run `zeus` like this: `sudo zeusd
+
 # Usage
 
 ## Without configuration

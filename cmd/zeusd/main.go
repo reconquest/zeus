@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/user"
+	"path/filepath"
 
 	"github.com/docopt/docopt-go"
 	"github.com/kovetskiy/lorg"
@@ -24,7 +25,7 @@ Usage:
 Options:
   -h --help           Show this help.
   -c --config=<file>  Specify config file.
-                       [default: $HOME/.config/zeus/config.toml]
+                       [default: $CONFIG]
   --no-export         Will not export target pool at the end of backup
                        operation.
   --debug             Output debug messages in logs.
@@ -45,15 +46,21 @@ func init() {
 		log.Fatal(err)
 	}
 
-	home := user.HomeDir
-
 	env := func(key, defaultValue string) {
 		if os.Getenv(key) == "" {
 			os.Setenv(key, defaultValue)
 		}
 	}
 
-	env("HOME", home)
+	var config string
+
+	if user.Uid == "0" {
+		config = "/etc/zeus/zeusd.conf"
+	} else {
+		config = filepath.Join(user.HomeDir, ".config", "zeus", "zeusd.conf")
+	}
+
+	env("CONFIG", config)
 
 	usage = os.ExpandEnv(usage)
 }
