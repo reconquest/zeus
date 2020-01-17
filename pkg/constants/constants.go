@@ -12,7 +12,8 @@ const (
 )
 
 const (
-	Managed                         = "zeus::managed"
+	Managed = "zeus::managed"
+
 	Backup                          = "zeus:backup"
 	BackupInterval                  = "zeus:backup:interval"
 	Housekeeping                    = "zeus:housekeeping"

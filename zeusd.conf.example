@@ -1,0 +1,52 @@
+# This is example zeus configuration file.
+# Values specific here are default ones and if no configuration exists they
+# will be used by default.
+
+# `target_pool` specifies name of target backup pool.
+target_pool = "zbackup"
+
+# `target_dataset` specifies name of target dataset under target_pool,
+# e.g. zbackup/mars.
+# Special value '$HOSTNAME' will be replaced with current hostname.
+target_dataset = '$HOSTNAME'
+
+# `snapshot_prefix` will be used to prefix all snapshots made by zeus. Does not
+# affect on backup operation.
+snapshot_prefix = "zeus:"
+
+# `hold_tag` will be used to place holds on latest snapshots to avoid
+# accidental deletion.
+hold_tag = "zeus"
+
+# `encryption_key` section describes how to obtain encryption for a backup
+# dataset if it is encrypted.
+[encryption_key]
+# `provider` specifies how exactly obtain encryption key. Currently, only
+# 'command' is supported.
+provider = "command"
+
+    # `encryption_key.command` section used to specify which command will be
+    # invoked to get encryption keys.
+    [encryption_key.command]
+    # `executable` is name of the executable which will be automatically
+    # invoked by zeus to obtain encryption key.
+    executable = "zfs-encryption-key"
+
+    # `args` describe which arguments needs to be passed to `executable.
+    # Special value '$DATASET' will be replaced with value of
+    # `target_pool`/`target_dataset` (e.g. zbackup/venus)
+    args = ['$DATASET']
+
+# `defaults` used to specify default values for zfs properties which are used
+# by zeus.
+# Check out README for description of those zfs properties.
+[defaults]
+
+    [defaults.housekeeping]
+    policy = "by-count"
+
+    [defaults.housekeeping.by_count]
+    keep_on_source = 1
+    keep_on_target = 10
+
+# vim: ft=toml
