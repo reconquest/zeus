@@ -501,7 +501,7 @@ func runEncryptionKeyProviderCommand(
 		args[i] = strings.ReplaceAll(arg, "$DATASET", dataset)
 	}
 
-	execution := exec.Exec(config.Executable, args...)
+	execution := exec.Exec(config.Executable, args...).NoStdLog()
 
 	var stdout bytes.Buffer
 

@@ -45,16 +45,20 @@ func getLogger(log *lorg.Log) lexec.Logger {
 			reSpecialCharsEscape = regexp.MustCompile("[$`\"!]")
 		)
 
-		for i, arg := range command {
+		var safe []string
+
+		for _, arg := range command {
 			if reSpecialChars.MatchString(arg) {
-				command[i] = fmt.Sprintf(
+				safe = append(safe, fmt.Sprintf(
 					`"%s"`,
-					reSpecialCharsEscape.ReplaceAllString(arg, `\&`),
-				)
+					reSpecialCharsEscape.ReplaceAllString(arg, `\$0`),
+				))
+			} else {
+				safe = append(safe, arg)
 			}
 		}
 
-		return strings.Join(command, " ")
+		return strings.Join(safe, " ")
 	}
 
 	return func(command []string, stream lexec.Stream, data []byte) {
