@@ -27,8 +27,7 @@ func Configure(
 	var constructor PolicyConstructor
 
 	for _, candidate := range properties {
-		switch candidate.Name {
-		case constants.Housekeeping:
+		if candidate.Name == constants.Housekeeping {
 			property = &candidate
 			break
 		}
