@@ -15,7 +15,7 @@ physically connected to the machine.
 1. Create pool named `zbackup`.
 
 2. Mark dataset which you want to backup:  
-   `zfs zeus:backup=on <your-dataset>`.
+   `zfs set zeus:backup=on <your-dataset>`.
 
 2. Run **zeus** like this:  
    `sudo zeusd backup`.
