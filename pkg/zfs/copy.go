@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/reconquest/karma-go"
@@ -57,7 +56,7 @@ func CopyDataset(
 		StartedAt: time.Now(),
 	}
 
-	sizeUsed, sizeReferenced, err := getSize(sourceSnapshot)
+	sizeWritten, sizeReferenced, err := getSize(sourceSnapshot)
 	if err != nil {
 		return err
 	}
@@ -65,7 +64,7 @@ func CopyDataset(
 	if baseSnapshot == "" {
 		progress.TotalSize = sizeReferenced
 	} else {
-		progress.TotalSize = sizeUsed
+		progress.TotalSize = sizeWritten
 	}
 
 	var (
@@ -93,48 +92,44 @@ func CopyDataset(
 
 	recv.SetStdin(io.TeeReader(stdout, &progressWriter))
 
-	var wg sync.WaitGroup
-	var errs struct {
-		sync.Mutex
-		reasons []karma.Reason
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		err = send.Run()
-		if err != nil {
-			errs.Lock()
-			errs.reasons = append(errs.reasons, karma.Format(
-				err,
-				"zfs send failed",
-			))
-			errs.Unlock()
-		}
-
-		progress.Sent = true
-
-		progressFunc(progress)
-
-		log.Info("{copy} send thread finished, now waiting for receive")
-	}()
-
-	err = recv.Run()
+	err = recv.Start()
 	if err != nil {
-		errs.Lock()
-		errs.reasons = append(errs.reasons, karma.Format(
+		return karma.Format(
 			err,
-			"zfs receive failed",
-		))
-		errs.Unlock()
-
-		send.Process().Kill()
+			"unable to start zfs recv",
+		)
 	}
 
-	wg.Wait()
+	err = send.Start()
+	if err != nil {
+		return karma.Format(
+			err,
+			"unable to run zfs send",
+		)
+	}
 
-	if len(errs.reasons) > 0 {
-		return karma.Push(err, errs.reasons...)
+	progress.Sent = true
+
+	progressFunc(progress)
+
+	log.Info("{copy} send thread finished, now waiting for receive")
+
+	err = recv.Wait()
+	if err != nil {
+		send.Process().Kill()
+
+		return karma.Format(
+			err,
+			"unable to wait for zfs recv",
+		)
+	}
+
+	err = send.Wait()
+	if err != nil {
+		return karma.Format(
+			err,
+			"unable to wait zfs send",
+		)
 	}
 
 	return nil
@@ -142,7 +137,7 @@ func CopyDataset(
 
 func getSize(snapshot string) (uint64, uint64, error) {
 	mappings, err := GetDatasetProperties([]PropertyRequest{
-		{Name: constants.Used, System: true, Snapshot: true},
+		{Name: constants.Written, System: true, Snapshot: true},
 		{Name: constants.Referenced, System: true, Snapshot: true},
 	}, snapshot)
 	if err != nil {
@@ -154,7 +149,7 @@ func getSize(snapshot string) (uint64, uint64, error) {
 	}
 
 	var (
-		sizeUsed       uint64
+		sizeWritten    uint64
 		sizeReferenced uint64
 	)
 
@@ -173,18 +168,18 @@ func getSize(snapshot string) (uint64, uint64, error) {
 
 		for _, property := range mapping.Properties {
 			switch property.Name {
-			case constants.Used:
+			case constants.Written:
 				size, err := strconv.ParseUint(property.Value, 10, 64)
 				if err != nil {
 					return 0, 0, karma.
 						Describe("size", property.Value).
 						Format(
 							err,
-							"unable to parse used size",
+							"unable to parse written size",
 						)
 				}
 
-				sizeUsed = size
+				sizeWritten = size
 
 			case constants.Referenced:
 				size, err := strconv.ParseUint(property.Value, 10, 64)
@@ -202,5 +197,5 @@ func getSize(snapshot string) (uint64, uint64, error) {
 		}
 	}
 
-	return sizeUsed, sizeReferenced, nil
+	return sizeWritten, sizeReferenced, nil
 }

@@ -9,6 +9,7 @@ const (
 	EncryptionRoot     = "encryptionroot"
 	Referenced         = "referenced"
 	Used               = "used"
+	Written            = "written"
 )
 
 const (
